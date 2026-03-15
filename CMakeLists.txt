@@ -164,7 +164,7 @@ if(OPUS_INCLUDE_DIR AND OPUS_LIBRARY AND PORTAUDIO_INCLUDE_DIR AND PORTAUDIO_LIB
         m
     )
     if(WIN32)
-        target_link_libraries(voicechat-client ws2_32 winhttp shlwapi)
+        target_link_libraries(voicechat-client ws2_32 winhttp shlwapi d3d11 dxgi mfplat mfuuid mf ole32)
     else()
         target_link_libraries(voicechat-client pthread)
         # Static portaudio on Linux pulls in ALSA — link it explicitly.
@@ -195,14 +195,20 @@ if(OPUS_INCLUDE_DIR AND OPUS_LIBRARY AND PORTAUDIO_INCLUDE_DIR AND PORTAUDIO_LIB
     endif()
     message(STATUS "Client will be built")
 else()
-    if(NOT OPUS_INCLUDE_DIR OR NOT OPUS_LIBRARY)
-        message(FATAL_ERROR "libopus not found. Install: brew install opus | apt install libopus-dev | pacman -S mingw-w64-x86_64-opus")
-    endif()
-    if(NOT PORTAUDIO_INCLUDE_DIR OR NOT PORTAUDIO_LIBRARY)
-        message(FATAL_ERROR "portaudio not found. Install: brew install portaudio | apt install portaudio19-dev | pacman -S mingw-w64-x86_64-portaudio")
-    endif()
-    if(NOT VPX_INCLUDE_DIR OR NOT VPX_LIBRARY)
-        message(FATAL_ERROR "libvpx not found. Install: brew install libvpx | apt install libvpx-dev | pacman -S mingw-w64-x86_64-libvpx")
+    # Only error if no server target exists (i.e. not a server-only build).
+    # Server-only builds (e.g. Alpine/musl) don't need client dependencies.
+    if(NOT TARGET voicechat-server)
+        if(NOT OPUS_INCLUDE_DIR OR NOT OPUS_LIBRARY)
+            message(FATAL_ERROR "libopus not found. Install: brew install opus | apt install libopus-dev | pacman -S mingw-w64-x86_64-opus")
+        endif()
+        if(NOT PORTAUDIO_INCLUDE_DIR OR NOT PORTAUDIO_LIBRARY)
+            message(FATAL_ERROR "portaudio not found. Install: brew install portaudio | apt install portaudio19-dev | pacman -S mingw-w64-x86_64-portaudio")
+        endif()
+        if(NOT VPX_INCLUDE_DIR OR NOT VPX_LIBRARY)
+            message(FATAL_ERROR "libvpx not found. Install: brew install libvpx | apt install libvpx-dev | pacman -S mingw-w64-x86_64-libvpx")
+        endif()
+    else()
+        message(STATUS "Client libraries not found — only server will be built")
     endif()
 endif()
 
@@ -355,6 +361,7 @@ else()
         m
         ws2_32 winhttp shlwapi
         d3d11 dxgi
+        mfplat mfuuid mf ole32
     )
     target_compile_definitions(voicechat PRIVATE VC_GUI_BUILD
         VC_COMMIT_COUNT="${VC_COMMIT_COUNT}" VC_COMMIT_HASH="${VC_COMMIT_HASH}")

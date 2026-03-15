@@ -92,14 +92,21 @@ typedef struct hw_enc hw_enc_t;
 #ifdef _WIN32
 /* ── Windows: Media Foundation ──────────────────────────────────────────── */
 
+#include <windows.h>
+#include <initguid.h>
 #include <mfapi.h>
 #include <mftransform.h>
 #include <mfidl.h>
 #include <mferror.h>
 #include <codecapi.h>
-#pragma comment(lib, "mfplat.lib")
-#pragma comment(lib, "mfuuid.lib")
-#pragma comment(lib, "mf.lib")
+/* MFSetAttributeSize/MFSetAttributeRatio are inline helpers that MinGW
+ * headers may not provide.  Pack two UINT32 into a UINT64 manually. */
+static inline HRESULT my_MFSetAttrSize(IMFAttributes *a, REFGUID k, UINT32 w, UINT32 h) {
+    return a->lpVtbl->SetUINT64(a, k, ((UINT64)w << 32) | h);
+}
+static inline HRESULT my_MFSetAttrRatio(IMFAttributes *a, REFGUID k, UINT32 n, UINT32 d) {
+    return a->lpVtbl->SetUINT64(a, k, ((UINT64)n << 32) | d);
+}
 
 struct hw_enc {
     IMFTransform   *mft;
@@ -108,6 +115,13 @@ struct hw_enc {
     int             force_key;
     char            name[32];
 };
+
+/* MFVideoFormat_AV1 may not be defined in older MinGW/SDK headers */
+#ifndef MFVideoFormat_AV1
+static const GUID local_MFVideoFormat_AV1 =
+    {0x31305641, 0x0000, 0x0010, {0x80,0x00,0x00,0xAA,0x00,0x38,0x9B,0x71}};
+#define MFVideoFormat_AV1 local_MFVideoFormat_AV1
+#endif
 
 static const GUID *codec_to_subtype(int codec_id) {
     switch (codec_id) {
@@ -150,8 +164,8 @@ static hw_enc_t *hw_enc_try(int codec_id, int w, int h, int fps, int kbps)
     MFCreateMediaType(&out_mt);
     out_mt->lpVtbl->SetGUID(out_mt, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
     out_mt->lpVtbl->SetGUID(out_mt, &MF_MT_SUBTYPE, subtype);
-    MFSetAttributeSize(out_mt, &MF_MT_FRAME_SIZE, (UINT32)w, (UINT32)h);
-    MFSetAttributeRatio(out_mt, &MF_MT_FRAME_RATE, (UINT32)fps, 1);
+    my_MFSetAttrSize(out_mt, &MF_MT_FRAME_SIZE, (UINT32)w, (UINT32)h);
+    my_MFSetAttrRatio(out_mt, &MF_MT_FRAME_RATE, (UINT32)fps, 1);
     out_mt->lpVtbl->SetUINT32(out_mt, &MF_MT_AVG_BITRATE, (UINT32)(kbps * 1000));
     out_mt->lpVtbl->SetUINT32(out_mt, &MF_MT_INTERLACE_MODE,
                                 MFVideoInterlace_Progressive);
@@ -165,8 +179,8 @@ static hw_enc_t *hw_enc_try(int codec_id, int w, int h, int fps, int kbps)
     MFCreateMediaType(&in_mt);
     in_mt->lpVtbl->SetGUID(in_mt, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
     in_mt->lpVtbl->SetGUID(in_mt, &MF_MT_SUBTYPE, &MFVideoFormat_NV12);
-    MFSetAttributeSize(in_mt, &MF_MT_FRAME_SIZE, (UINT32)w, (UINT32)h);
-    MFSetAttributeRatio(in_mt, &MF_MT_FRAME_RATE, (UINT32)fps, 1);
+    my_MFSetAttrSize(in_mt, &MF_MT_FRAME_SIZE, (UINT32)w, (UINT32)h);
+    my_MFSetAttrRatio(in_mt, &MF_MT_FRAME_RATE, (UINT32)fps, 1);
 
     hr = mft->lpVtbl->SetInputType(mft, 0, in_mt, 0);
     in_mt->lpVtbl->Release(in_mt);
@@ -255,7 +269,9 @@ static hw_enc_t *hw_enc_try(int codec_id, int w, int h, int fps, int kbps)
     CMVideoCodecType ct;
     const char *codec_name;
     switch (codec_id) {
+#ifdef kCMVideoCodecType_AV1
     case VENC_AV1:  ct = kCMVideoCodecType_AV1;  codec_name = "AV1";  break;
+#endif
     case VENC_H265: ct = kCMVideoCodecType_HEVC;  codec_name = "H.265"; break;
     case VENC_H264: ct = kCMVideoCodecType_H264;  codec_name = "H.264"; break;
     default: return NULL;
@@ -277,34 +293,30 @@ static hw_enc_t *hw_enc_try(int codec_id, int w, int h, int fps, int kbps)
     CFNumberRef br = CFNumberCreate(NULL, kCFNumberIntType, &avg_bps);
     VTSessionSetProperty(session,
                           kVTCompressionPropertyKey_AverageBitRate, br);
-    CFRelease(br);
 
     float fps_f = (float)fps;
     CFNumberRef fps_ref = CFNumberCreate(NULL, kCFNumberFloat32Type, &fps_f);
     VTSessionSetProperty(session,
                           kVTCompressionPropertyKey_ExpectedFrameRate, fps_ref);
-    CFRelease(fps_ref);
 
     int max_interval = fps * 2;  /* keyframe every 2s */
     CFNumberRef ki = CFNumberCreate(NULL, kCFNumberIntType, &max_interval);
     VTSessionSetProperty(session,
                           kVTCompressionPropertyKey_MaxKeyFrameInterval, ki);
-    CFRelease(ki);
 
     VTCompressionSessionPrepareToEncodeFrames(session);
 
+    /* Tear down the probe session — we need to re-create with callback ctx */
+    VTCompressionSessionInvalidate(session);
+    CFRelease(session);
+
     hw_enc_t *enc = (hw_enc_t *)calloc(1, sizeof(hw_enc_t));
-    enc->session      = session;
     enc->codec_id     = codec_id;
     enc->width        = w;
     enc->height       = h;
     enc->out_capacity = w * h;  /* generous buffer */
     enc->out_buf      = (uint8_t *)malloc((size_t)enc->out_capacity);
 
-    /* Set callback context */
-    VTCompressionSessionInvalidate(session);
-    CFRelease(session);
-    /* Re-create with proper callback context */
     err = VTCompressionSessionCreate(NULL, w, h, ct, NULL, NULL,
                                       NULL, vt_output_callback,
                                       enc, &enc->session);
@@ -318,8 +330,16 @@ static hw_enc_t *hw_enc_try(int codec_id, int w, int h, int fps, int kbps)
     VTSessionSetProperty(enc->session,
                           kVTCompressionPropertyKey_AllowFrameReordering,
                           kCFBooleanFalse);
+    /* Re-apply bitrate, fps, keyframe interval to the real session */
     VTSessionSetProperty(enc->session,
                           kVTCompressionPropertyKey_AverageBitRate, br);
+    CFRelease(br);
+    VTSessionSetProperty(enc->session,
+                          kVTCompressionPropertyKey_ExpectedFrameRate, fps_ref);
+    CFRelease(fps_ref);
+    VTSessionSetProperty(enc->session,
+                          kVTCompressionPropertyKey_MaxKeyFrameInterval, ki);
+    CFRelease(ki);
     VTCompressionSessionPrepareToEncodeFrames(enc->session);
 
     snprintf(enc->name, sizeof(enc->name), "%s (hw/VT)", codec_name);
@@ -385,7 +405,7 @@ static void hw_enc_destroy(hw_enc_t *enc)
 #else
 /* ── Linux: stub (VA-API would go here via dlopen) ──────────────────────── */
 
-struct hw_enc { int codec_id; char name[32]; };
+struct hw_enc { int codec_id; int force_key; char name[32]; };
 
 static hw_enc_t *hw_enc_try(int codec_id, int w, int h, int fps, int kbps)
 {
