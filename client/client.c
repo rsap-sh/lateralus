@@ -90,6 +90,18 @@
 #include "../common/crypto.h"
 #include "../common/vc_api.h"
 
+/* Screen sharing — implemented in screen_share.c */
+void     ss_start(sock_t udp_fd, uint32_t client_id, uint16_t room_id,
+                  struct sockaddr_in server_addr);
+void     ss_stop(void);
+int      ss_is_active(void);
+int      ss_get_frame(uint8_t *out, int buf_size, int *w, int *h,
+                      uint32_t *frame_id);
+uint32_t ss_sharer_id(void);
+const char *ss_encoder_name(void);
+void     ss_recv_fragment(const uint8_t *pkt, int pkt_len, uint32_t sender_id);
+void     ss_receiver_clear(void);
+
 /* Linux-specific: real-time scheduling, QoS, busy-poll */
 #if defined(__linux__)
   #include <sched.h>
@@ -318,6 +330,8 @@ typedef struct {
     struct sockaddr_in direct_addr; /* peer's public IP:port (from server) */
     int                direct_known; /* 1 once we have their addr */
     int                direct_ok;    /* 1 once we confirmed two-way direct path */
+
+    int                sharing_screen; /* 1 if this peer is screen sharing */
 } peer_t;
 
 /* ── Client state ───────────────────────────────────────────────────────── */
@@ -693,6 +707,12 @@ static void *udp_recv_thread(void *arg) {
             continue;
         }
 
+        /* PKT_VIDEO / PKT_VIDEO_FIN: screen share fragments → reassemble */
+        if (hdr->type == PKT_VIDEO || hdr->type == PKT_VIDEO_FIN) {
+            ss_recv_fragment(buf, (int)n, hdr->client_id);
+            continue;
+        }
+
         if (hdr->type != PKT_AUDIO) continue;
 
         uint32_t sender_id   = hdr->client_id;
@@ -992,6 +1012,21 @@ static void handle_server_message(const char *msg) {
                            sizeof(p->direct_addr));
             }
             pthread_mutex_unlock(&vc->peers_lock);
+        }
+    } else if (strcmp(op, "screen_state") == 0) {
+        /* A peer started or stopped screen sharing.
+         * Format: {"op":"screen_state","id":X,"sharing":1} */
+        char *id_p = strstr(msg, "\"id\":");
+        char *sh_p = strstr(msg, "\"sharing\":");
+        if (id_p && sh_p) {
+            uint32_t pid     = (uint32_t)atol(id_p + 5);
+            int      sharing = atoi(sh_p + 10);
+            pthread_mutex_lock(&vc->peers_lock);
+            peer_t *p = peer_find(pid);
+            if (p) p->sharing_screen = sharing;
+            pthread_mutex_unlock(&vc->peers_lock);
+            if (!sharing) ss_receiver_clear();
+            DLOG("[screen] peer %u sharing=%d\n", pid, sharing);
         }
     } else if (strcmp(op, "rooms") == 0) {
         DLOG("[rooms] %s\n", msg);
@@ -2141,12 +2176,59 @@ int vc_snapshot_peers(vc_peer_snapshot_t *out, int max)
         out[n].speaking     = p->speaking;
         out[n].direct_ok    = p->direct_ok;
         out[n].direct_known = p->direct_known;
-        out[n].jb_ms        = p->jb.count  * JB_FRAME_MS;
-        out[n].jb_target_ms = p->jb.target * JB_FRAME_MS;
+        out[n].jb_ms          = p->jb.count  * JB_FRAME_MS;
+        out[n].jb_target_ms   = p->jb.target * JB_FRAME_MS;
+        out[n].sharing_screen = p->sharing_screen;
         n++;
     }
     pthread_mutex_unlock(&g_client.peers_lock);
     return n;
+}
+
+/* ── Screen sharing API wrappers ─────────────────────────────────────── */
+
+void vc_screen_share_start(void)
+{
+    if (!g_client.connected || !g_client.in_room) return;
+    ss_start(g_client.udp_fd, g_client.client_id,
+             g_client.room_id, g_client.server_udp_addr);
+
+    /* Notify peers via TCP signaling */
+    char msg[128];
+    snprintf(msg, sizeof(msg), "{\"op\":\"screen\",\"sharing\":1}\n");
+    tcp_send_str(msg);
+}
+
+void vc_screen_share_stop(void)
+{
+    ss_stop();
+    if (g_client.connected) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "{\"op\":\"screen\",\"sharing\":0}\n");
+        tcp_send_str(msg);
+    }
+}
+
+int vc_screen_sharing(void)
+{
+    return ss_is_active();
+}
+
+int vc_screen_frame_get(uint8_t *frame_out, int buf_size,
+                        int *width_out, int *height_out,
+                        uint32_t *frame_id_out)
+{
+    return ss_get_frame(frame_out, buf_size, width_out, height_out, frame_id_out);
+}
+
+uint32_t vc_screen_sharer_id(void)
+{
+    return ss_sharer_id();
+}
+
+const char *vc_encoder_name(void)
+{
+    return ss_encoder_name();
 }
 
 /* Connect, run audio/network engine, return when done.
@@ -2425,6 +2507,9 @@ int vc_run(const char *host, const char *room,
 #ifndef VC_GUI_BUILD
         pthread_join(t_status, NULL);
 #endif
+
+        /* Stop screen sharing if active */
+        if (ss_is_active()) ss_stop();
 
         opus_encoder_destroy(vc->encoder);
         pthread_mutex_destroy(&vc->peers_lock);

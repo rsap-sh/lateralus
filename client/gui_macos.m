@@ -52,7 +52,7 @@ static NSString *const kUser   = @"vc_user";
 @property (strong) NSView            *roomView;
 @property (strong) NSTextField       *roomLabel;
 @property (strong) NSTextView        *peerView;
-@property (strong) NSButton          *muteBtn, *disconnectBtn;
+@property (strong) NSButton          *muteBtn, *shareBtn, *disconnectBtn;
 /* Refresh timer */
 @property (strong) NSTimer           *timer;
 @end
@@ -257,14 +257,20 @@ static NSString *const kUser   = @"vc_user";
     scroll.documentView = _peerView;
     [_roomView addSubview:scroll];
 
-    CGFloat bw = (W - 36) / 2;
+    CGFloat bw = (W - 48) / 3;
     _muteBtn = [[NSButton alloc] initWithFrame:NSMakeRect(12, 14, bw, 28)];
     _muteBtn.title      = @"Mute [M]";
     _muteBtn.bezelStyle = NSBezelStyleRounded;
     _muteBtn.target = self; _muteBtn.action = @selector(muteClicked);
     [_roomView addSubview:_muteBtn];
 
-    _disconnectBtn = [[NSButton alloc] initWithFrame:NSMakeRect(24 + bw, 14, bw, 28)];
+    _shareBtn = [[NSButton alloc] initWithFrame:NSMakeRect(24 + bw, 14, bw, 28)];
+    _shareBtn.title      = @"Share Screen";
+    _shareBtn.bezelStyle = NSBezelStyleRounded;
+    _shareBtn.target = self; _shareBtn.action = @selector(shareClicked);
+    [_roomView addSubview:_shareBtn];
+
+    _disconnectBtn = [[NSButton alloc] initWithFrame:NSMakeRect(36 + bw*2, 14, bw, 28)];
     _disconnectBtn.title      = @"Disconnect";
     _disconnectBtn.bezelStyle = NSBezelStyleRounded;
     _disconnectBtn.target = self; _disconnectBtn.action = @selector(disconnectClicked);
@@ -315,6 +321,11 @@ static NSString *const kUser   = @"vc_user";
 
 - (void)muteClicked { vc_set_muted(!vc_get_muted()); }
 
+- (void)shareClicked {
+    if (vc_screen_sharing()) vc_screen_share_stop();
+    else                     vc_screen_share_start();
+}
+
 - (void)debugClicked
 {
     vc_set_debug(_debugBtn.state == NSControlStateValueOn ? 1 : 0);
@@ -363,6 +374,7 @@ static NSString *const kUser   = @"vc_user";
     BOOL muted     = vc_get_muted()    != 0;
 
     _muteBtn.title = muted ? @"Unmute [M]" : @"Mute [M]";
+    _shareBtn.title = vc_screen_sharing() ? @"Stop Share" : @"Share Screen";
 
     if (!connected) {
         _roomLabel.stringValue =
@@ -385,9 +397,12 @@ static NSString *const kUser   = @"vc_user";
         const char *path = p->direct_ok    ? "P2P"  :
                            p->direct_known ? "~P2P" : "relay";
         [txt appendFormat:(p->speaking
-                ? @"\xe2\x97\x8f %s  [%s]  jb=%d/%dms\n"
-                : @"\xe2\x97\x8b %s  [%s]  jb=%d/%dms\n"),
+                ? @"\xe2\x97\x8f %s  [%s]  jb=%d/%dms"
+                : @"\xe2\x97\x8b %s  [%s]  jb=%d/%dms"),
             p->name, path, p->jb_ms, p->jb_target_ms];
+        if (p->sharing_screen)
+            [txt appendString:@"  [screen]"];
+        [txt appendString:@"\n"];
     }
     if (n == 0)
         [txt appendString:@"\nWaiting for others to join…"];

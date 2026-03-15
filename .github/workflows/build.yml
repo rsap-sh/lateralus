@@ -94,7 +94,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake build-essential \
-            libopus-dev portaudio19-dev libgtk-3-dev
+            libopus-dev portaudio19-dev libgtk-3-dev \
+            libvpx-dev libx11-dev libxext-dev
 
       - name: Build
         run: |
@@ -158,6 +159,20 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF
           cmake --build build -j$(sysctl -n hw.ncpu)
           cmake --install build
+
+      - name: Build libvpx (static, ${{ matrix.arch }})
+        run: |
+          curl -sSL \
+            https://github.com/webmproject/libvpx/archive/refs/tags/v1.14.1.tar.gz \
+            -o libvpx.tar.gz
+          tar xf libvpx.tar.gz
+          cd libvpx-1.14.1
+          TARGET=${{ matrix.arch == 'arm64' && 'arm64-darwin20-gcc' || 'x86_64-darwin20-gcc' }}
+          ./configure --prefix=/tmp/deps --target=$TARGET \
+            --enable-static --disable-shared \
+            --disable-examples --disable-tools --disable-docs \
+            --disable-unit-tests --enable-vp9 --enable-realtime-only
+          make -j$(sysctl -n hw.ncpu) install
 
       - name: Build
         run: |
@@ -246,6 +261,7 @@ jobs:
             mingw-w64-x86_64-opus
             mingw-w64-x86_64-portaudio
             mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-libvpx
 
       - name: Build
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build --target voicechat
@@ -259,6 +275,7 @@ jobs:
           cp "$MINGW/libopus-0.dll"       dist/
           cp "$MINGW/libportaudio.dll"    dist/
           cp "$MINGW/SDL2.dll"            dist/
+          cp "$MINGW/libvpx"*.dll          dist/ 2>/dev/null || true
           cp "$MINGW/libgcc_s_seh-1.dll"  dist/
           cp "$MINGW/libwinpthread-1.dll" dist/
           cp "$MINGW/libstdc++-6.dll"     dist/ 2>/dev/null || true
