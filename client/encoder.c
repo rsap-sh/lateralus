@@ -101,11 +101,12 @@ typedef struct hw_enc hw_enc_t;
 #include <codecapi.h>
 /* MFSetAttributeSize/MFSetAttributeRatio are inline helpers that MinGW
  * headers may not provide.  Pack two UINT32 into a UINT64 manually. */
-static inline HRESULT my_MFSetAttrSize(IMFAttributes *a, REFGUID k, UINT32 w, UINT32 h) {
-    return a->lpVtbl->SetUINT64(a, k, ((UINT64)w << 32) | h);
+/* IMFMediaType inherits IMFAttributes in C++ but not in C — accept void*. */
+static inline HRESULT my_MFSetAttrSize(IMFMediaType *mt, REFGUID k, UINT32 w, UINT32 h) {
+    return mt->lpVtbl->SetUINT64(mt, k, ((UINT64)w << 32) | h);
 }
-static inline HRESULT my_MFSetAttrRatio(IMFAttributes *a, REFGUID k, UINT32 n, UINT32 d) {
-    return a->lpVtbl->SetUINT64(a, k, ((UINT64)n << 32) | d);
+static inline HRESULT my_MFSetAttrRatio(IMFMediaType *mt, REFGUID k, UINT32 n, UINT32 d) {
+    return mt->lpVtbl->SetUINT64(mt, k, ((UINT64)n << 32) | d);
 }
 
 struct hw_enc {
