@@ -1197,7 +1197,7 @@ static void *status_thread(void *arg) {
  *   4. Download zip → extract binary → atomic replace
  * ─────────────────────────────────────────────────────────────────────── */
 
-#define UPDATE_REPO   "rohanverma2007/lateralus"
+#define UPDATE_REPO   "rsap-sh/lateralus"
 #define UPDATE_API    "https://api.github.com/repos/" UPDATE_REPO
 
 /* Artifact names must match the CI upload names in build.yml.
