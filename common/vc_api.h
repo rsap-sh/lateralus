@@ -21,6 +21,7 @@ typedef struct {
     int     direct_known;   /* P2P punch in progress             */
     int     jb_ms;          /* jitter buffer fill  (ms)          */
     int     jb_target_ms;   /* adaptive target     (ms)          */
+    int     sharing_screen; /* non-zero if peer is screen sharing */
 } vc_peer_snapshot_t;
 
 /* Mute mic input (peers are still heard). Thread-safe. */
@@ -66,6 +67,27 @@ int         do_update(void);
 
 /* Persist a GitHub token to the config file for future --update calls. */
 int         save_token(const char *token);
+
+/* ── Screen sharing ────────────────────────────────────────────────────── */
+
+/* Start/stop sharing the local screen. Thread-safe. */
+void        vc_screen_share_start(void);
+void        vc_screen_share_stop(void);
+int         vc_screen_sharing(void);          /* 1 if local sharing active   */
+
+/* Returns the latest decoded video frame from the sharing peer.
+ * Caller provides a buffer; returns 0 on success, -1 if no frame.
+ * frame_out must be at least width*height*4 bytes (BGRA).
+ * *width_out and *height_out are set to the frame dimensions. */
+int         vc_screen_frame_get(uint8_t *frame_out, int buf_size,
+                                int *width_out, int *height_out,
+                                uint32_t *frame_id_out);
+
+/* Returns the client_id of the peer currently sharing, or 0 if none. */
+uint32_t    vc_screen_sharer_id(void);
+
+/* Encoder info string (e.g. "AV1 (hw)" or "VP9 (sw)"). */
+const char *vc_encoder_name(void);
 
 #ifdef __cplusplus
 }

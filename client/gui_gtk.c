@@ -76,7 +76,7 @@ static GtkWidget    *window;
 static GtkWidget    *stack;                    /* "connect" | "room" pages */
 static GtkWidget    *server_entry, *room_entry, *user_entry, *psk_entry;
 static GtkWidget    *connect_btn, *update_btn, *error_label;
-static GtkWidget    *room_label, *mute_btn, *disconnect_btn;
+static GtkWidget    *room_label, *mute_btn, *disconnect_btn, *share_btn;
 static GtkTextBuffer *peer_buf;
 
 /* ── Update button helpers ──────────────────────────────────────────────── */
@@ -134,6 +134,9 @@ static gboolean tick(gpointer data)
     int muted     = vc_get_muted();
 
     gtk_button_set_label(GTK_BUTTON(mute_btn), muted ? "Unmute [M]" : "Mute [M]");
+    int sharing = vc_screen_sharing();
+    gtk_button_set_label(GTK_BUTTON(share_btn),
+                          sharing ? "Stop Share" : "Share Screen");
 
     if (!connected) {
         char buf[512];
@@ -159,9 +162,12 @@ static gboolean tick(gpointer data)
         const char *path = p->direct_ok    ? "P2P"  :
                            p->direct_known ? "~P2P" : "relay";
         g_string_append_printf(txt, p->speaking
-            ? "\xe2\x97\x8f %s  [%s]  jb=%d/%dms\n"
-            : "\xe2\x97\x8b %s  [%s]  jb=%d/%dms\n",
+            ? "\xe2\x97\x8f %s  [%s]  jb=%d/%dms"
+            : "\xe2\x97\x8b %s  [%s]  jb=%d/%dms",
             p->name, path, p->jb_ms, p->jb_target_ms);
+        if (p->sharing_screen)
+            g_string_append(txt, "  [screen]");
+        g_string_append_c(txt, '\n');
     }
     if (n == 0)
         g_string_append(txt, "\nWaiting for others to join…");
@@ -216,6 +222,13 @@ static void on_mute_clicked(GtkButton *b, gpointer d)
 {
     (void)b; (void)d;
     vc_set_muted(!vc_get_muted());
+}
+
+static void on_share_clicked(GtkButton *b, gpointer d)
+{
+    (void)b; (void)d;
+    if (vc_screen_sharing()) vc_screen_share_stop();
+    else                     vc_screen_share_start();
 }
 
 static gboolean on_key_press(GtkWidget *w, GdkEventKey *ev, gpointer d)
@@ -367,13 +380,16 @@ static GtkWidget *build_room_page(void)
     gtk_container_add(GTK_CONTAINER(scroll), tv);
     gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
 
-    /* Mute / Disconnect buttons */
+    /* Mute / Share Screen / Disconnect buttons */
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     mute_btn       = gtk_button_new_with_label("Mute [M]");
+    share_btn      = gtk_button_new_with_label("Share Screen");
     disconnect_btn = gtk_button_new_with_label("Disconnect");
     g_signal_connect(mute_btn,       "clicked", G_CALLBACK(on_mute_clicked),       NULL);
+    g_signal_connect(share_btn,      "clicked", G_CALLBACK(on_share_clicked),      NULL);
     g_signal_connect(disconnect_btn, "clicked", G_CALLBACK(on_disconnect_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(hbox), mute_btn,       TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(hbox), share_btn,      TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), disconnect_btn, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 0);
 

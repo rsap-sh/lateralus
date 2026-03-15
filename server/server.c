@@ -401,6 +401,23 @@ static void dispatch_message(client_t *c, const char *msg) {
         handle_list(c);
     } else if (strcmp(op, "ping") == 0) {
         tcp_send(c, "{\"op\":\"pong\"}\n");
+    } else if (strcmp(op, "screen") == 0) {
+        /* Client starts/stops screen sharing — broadcast to room.
+         * {"op":"screen","sharing":1} → {"op":"screen_state","id":X,"sharing":1} */
+        char val[8] = {0};
+        json_get_str(msg, "sharing", val, sizeof(val));
+        /* sharing might be an int not string — handle both */
+        int sharing = 0;
+        const char *sp = strstr(msg, "\"sharing\":");
+        if (sp) sharing = atoi(sp + 10);
+
+        if (c->in_room) {
+            char bc[256];
+            snprintf(bc, sizeof(bc),
+                     "{\"op\":\"screen_state\",\"id\":%u,\"sharing\":%d}\n",
+                     c->id, sharing);
+            room_broadcast_tcp(c->room_id, bc, c->id);
+        }
     }
 }
 
@@ -451,12 +468,14 @@ static void udp_relay_packet(const uint8_t *buf, int len,
         return;
     }
 
-    if (hdr->type != PKT_AUDIO) {
+    if (hdr->type != PKT_AUDIO &&
+        hdr->type != PKT_VIDEO &&
+        hdr->type != PKT_VIDEO_FIN) {
         pthread_mutex_unlock(&g_lock);
         return;
     }
 
-    /* Relay audio to all other registered clients in the same room */
+    /* Relay audio/video to all other registered clients in the same room */
     uint16_t room_id   = hdr->room_id;
     uint32_t sender_id = hdr->client_id;
 

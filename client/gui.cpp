@@ -332,12 +332,87 @@ static void render_connect(float win_w)
         vc_set_debug(dbg ? 1 : 0);
 }
 
+/* ── Screen share preview ────────────────────────────────────────────── */
+
+static SDL_Texture  *s_screen_tex     = NULL;
+static SDL_Renderer *s_renderer_ref   = NULL;
+static int           s_screen_tex_w   = 0;
+static int           s_screen_tex_h   = 0;
+static uint32_t      s_last_frame_id  = 0;
+static uint8_t      *s_frame_buf      = NULL;
+static int           s_frame_buf_size = 0;
+
+static void update_screen_texture()
+{
+    if (!s_renderer_ref) return;
+
+    int w = 0, h = 0;
+    uint32_t fid = 0;
+
+    /* Check if there's a new frame */
+    if (vc_screen_sharer_id() == 0 && !vc_screen_sharing()) return;
+
+    /* Ensure buffer is large enough (4K max: 3840*2160*4 ≈ 33MB) */
+    int need = 3840 * 2160 * 4;
+    if (s_frame_buf_size < need) {
+        free(s_frame_buf);
+        s_frame_buf = (uint8_t *)malloc((size_t)need);
+        s_frame_buf_size = need;
+    }
+    if (!s_frame_buf) return;
+
+    if (vc_screen_frame_get(s_frame_buf, s_frame_buf_size, &w, &h, &fid) != 0)
+        return;
+    if (fid == s_last_frame_id) return;
+    s_last_frame_id = fid;
+
+    /* Recreate texture if dimensions changed */
+    if (w != s_screen_tex_w || h != s_screen_tex_h || !s_screen_tex) {
+        if (s_screen_tex) SDL_DestroyTexture(s_screen_tex);
+        s_screen_tex = SDL_CreateTexture(s_renderer_ref,
+                                          SDL_PIXELFORMAT_ARGB8888,
+                                          SDL_TEXTUREACCESS_STREAMING,
+                                          w, h);
+        s_screen_tex_w = w;
+        s_screen_tex_h = h;
+    }
+
+    if (s_screen_tex) {
+        void *pixels; int pitch;
+        if (SDL_LockTexture(s_screen_tex, NULL, &pixels, &pitch) == 0) {
+            for (int y = 0; y < h; y++)
+                memcpy((uint8_t *)pixels + y * pitch,
+                       s_frame_buf + y * w * 4, (size_t)w * 4);
+            SDL_UnlockTexture(s_screen_tex);
+        }
+    }
+}
+
+static void render_screen_preview(float win_w, float avail_h)
+{
+    if (!s_screen_tex || s_screen_tex_w <= 0 || s_screen_tex_h <= 0)
+        return;
+
+    /* Fit to available width while preserving aspect ratio */
+    float aspect = (float)s_screen_tex_w / (float)s_screen_tex_h;
+    float disp_w = win_w - 24.0f;
+    float disp_h = disp_w / aspect;
+    if (disp_h > avail_h - 20.0f) {
+        disp_h = avail_h - 20.0f;
+        disp_w = disp_h * aspect;
+    }
+
+    ImGui::SetCursorPosX((win_w - disp_w) * 0.5f);
+    ImGui::Image((ImTextureID)(intptr_t)s_screen_tex, {disp_w, disp_h});
+}
+
 /* ── Room view ──────────────────────────────────────────────────────────── */
 
 static void render_room(float win_w, float win_h)
 {
     bool connected = (vc_is_connected() != 0);
     bool muted     = (vc_get_muted()    != 0);
+    bool sharing   = (vc_screen_sharing() != 0);
 
     if (connected)
         ImGui::Text("# %s", vc_room_name());
@@ -345,7 +420,14 @@ static void render_room(float win_w, float win_h)
         ImGui::Text("  Connecting to %s\xe2\x80\xa6", s_args.host);
     ImGui::Separator();
 
-    float list_h = win_h - 84.0f;
+    /* Screen share preview area */
+    update_screen_texture();
+    bool has_preview = (s_screen_tex != NULL && s_screen_tex_w > 0 &&
+                        (vc_screen_sharer_id() != 0 || sharing));
+
+    float preview_h = has_preview ? win_h * 0.45f : 0.0f;
+    float list_h    = win_h - 120.0f - preview_h;
+
     ImGui::BeginChild("##peers", {0, list_h}, true);
 
     if (connected) {
@@ -358,6 +440,8 @@ static void render_room(float win_w, float win_h)
                                p.direct_known ? "~P2P" : "relay";
             peer_row(p.name, p.speaking != 0, false, false,
                      path, p.jb_ms, p.jb_target_ms);
+            if (p.sharing_screen)
+                ImGui::SameLine(), ImGui::TextDisabled("[screen]");
         }
         if (n == 0)
             ImGui::TextDisabled("  Waiting for others to join\xe2\x80\xa6");
@@ -366,11 +450,32 @@ static void render_room(float win_w, float win_h)
     }
     ImGui::EndChild();
 
+    /* Screen preview */
+    if (has_preview) {
+        ImGui::Separator();
+        if (sharing)
+            ImGui::TextDisabled("  Sharing screen (%s)", vc_encoder_name());
+        else
+            ImGui::TextDisabled("  Viewing shared screen");
+        render_screen_preview(win_w, preview_h);
+    }
+
     ImGui::Separator();
 
-    if (ImGui::Button(muted ? "Unmute [M]" : "Mute [M]",
-                      {win_w * 0.46f - 12.0f, 0}))
+    /* Bottom buttons: Mute | Share Screen | Disconnect */
+    float btn_w = (win_w - 36.0f) / 3.0f;
+
+    if (ImGui::Button(muted ? "Unmute [M]" : "Mute [M]", {btn_w, 0}))
         vc_set_muted(!muted);
+
+    ImGui::SameLine();
+    if (connected) {
+        const char *share_label = sharing ? "Stop Share" : "Share Screen";
+        if (ImGui::Button(share_label, {btn_w, 0})) {
+            if (sharing) vc_screen_share_stop();
+            else         vc_screen_share_start();
+        }
+    }
 
     ImGui::SameLine();
     if (ImGui::Button("Disconnect", {-1.0f, 0})) engine_stop();
@@ -425,6 +530,8 @@ int main(int argc, char **argv)
     if (!renderer)
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
     if (!renderer) { fprintf(stderr, "SDL_CreateRenderer: %s\n", SDL_GetError()); return 1; }
+
+    s_renderer_ref = renderer;
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -526,6 +633,8 @@ int main(int argc, char **argv)
     }
 
     engine_stop();
+    if (s_screen_tex)  SDL_DestroyTexture(s_screen_tex);
+    free(s_frame_buf);
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();

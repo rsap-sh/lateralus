@@ -121,27 +121,50 @@ find_path(PORTAUDIO_INCLUDE_DIR
     HINTS ${_INCLUDE_HINTS}
 )
 
+# ── libvpx (VP9 software encoder/decoder — screen sharing) ─────────────
+find_path(VPX_INCLUDE_DIR
+    NAMES vpx/vpx_encoder.h
+    HINTS ${_INCLUDE_HINTS}
+)
+find_library(VPX_LIBRARY
+    NAMES vpx
+    HINTS ${_LIB_HINTS}
+)
+
 message(STATUS "Opus include:     ${OPUS_INCLUDE_DIR}")
 message(STATUS "Opus lib:         ${OPUS_LIBRARY}")
 message(STATUS "PortAudio include:${PORTAUDIO_INCLUDE_DIR}")
 message(STATUS "PortAudio lib:    ${PORTAUDIO_LIBRARY}")
+message(STATUS "VPX include:      ${VPX_INCLUDE_DIR}")
+message(STATUS "VPX lib:          ${VPX_LIBRARY}")
 
-if(OPUS_INCLUDE_DIR AND OPUS_LIBRARY AND PORTAUDIO_INCLUDE_DIR AND PORTAUDIO_LIBRARY)
+# Screen sharing sources (compiled into both CLI and GUI clients)
+set(_SCREEN_SHARE_SRCS
+    client/screen_capture.c
+    client/encoder.c
+    client/screen_share.c
+)
+
+if(OPUS_INCLUDE_DIR AND OPUS_LIBRARY AND PORTAUDIO_INCLUDE_DIR AND PORTAUDIO_LIBRARY
+   AND VPX_INCLUDE_DIR AND VPX_LIBRARY)
     add_executable(voicechat-client
         client/client.c
+        ${_SCREEN_SHARE_SRCS}
     )
     target_include_directories(voicechat-client PRIVATE
         ${CMAKE_SOURCE_DIR}
         ${OPUS_INCLUDE_DIR}
         ${PORTAUDIO_INCLUDE_DIR}
+        ${VPX_INCLUDE_DIR}
     )
     target_link_libraries(voicechat-client
         ${OPUS_LIBRARY}
         ${PORTAUDIO_LIBRARY}
+        ${VPX_LIBRARY}
         m
     )
     if(WIN32)
-        target_link_libraries(voicechat-client ws2_32 winhttp shlwapi)
+        target_link_libraries(voicechat-client ws2_32 winhttp shlwapi d3d11 dxgi mfplat mfuuid mf ole32)
     else()
         target_link_libraries(voicechat-client pthread)
         # Static portaudio on Linux pulls in ALSA — link it explicitly.
@@ -172,11 +195,20 @@ if(OPUS_INCLUDE_DIR AND OPUS_LIBRARY AND PORTAUDIO_INCLUDE_DIR AND PORTAUDIO_LIB
     endif()
     message(STATUS "Client will be built")
 else()
-    if(NOT OPUS_INCLUDE_DIR OR NOT OPUS_LIBRARY)
-        message(FATAL_ERROR "libopus not found. Install: brew install opus | apt install libopus-dev | pacman -S mingw-w64-x86_64-opus")
-    endif()
-    if(NOT PORTAUDIO_INCLUDE_DIR OR NOT PORTAUDIO_LIBRARY)
-        message(FATAL_ERROR "portaudio not found. Install: brew install portaudio | apt install portaudio19-dev | pacman -S mingw-w64-x86_64-portaudio")
+    # Only error if no server target exists (i.e. not a server-only build).
+    # Server-only builds (e.g. Alpine/musl) don't need client dependencies.
+    if(NOT TARGET voicechat-server)
+        if(NOT OPUS_INCLUDE_DIR OR NOT OPUS_LIBRARY)
+            message(FATAL_ERROR "libopus not found. Install: brew install opus | apt install libopus-dev | pacman -S mingw-w64-x86_64-opus")
+        endif()
+        if(NOT PORTAUDIO_INCLUDE_DIR OR NOT PORTAUDIO_LIBRARY)
+            message(FATAL_ERROR "portaudio not found. Install: brew install portaudio | apt install portaudio19-dev | pacman -S mingw-w64-x86_64-portaudio")
+        endif()
+        if(NOT VPX_INCLUDE_DIR OR NOT VPX_LIBRARY)
+            message(FATAL_ERROR "libvpx not found. Install: brew install libvpx | apt install libvpx-dev | pacman -S mingw-w64-x86_64-libvpx")
+        endif()
+    else()
+        message(STATUS "Client libraries not found — only server will be built")
     endif()
 endif()
 
@@ -195,15 +227,18 @@ if(APPLE)
     add_executable(voicechat
         client/client.c
         client/gui_macos.m
+        ${_SCREEN_SHARE_SRCS}
     )
     target_include_directories(voicechat PRIVATE
         ${CMAKE_SOURCE_DIR}
         ${OPUS_INCLUDE_DIR}
         ${PORTAUDIO_INCLUDE_DIR}
+        ${VPX_INCLUDE_DIR}
     )
     target_link_libraries(voicechat
         ${OPUS_LIBRARY}
         ${PORTAUDIO_LIBRARY}
+        ${VPX_LIBRARY}
         m pthread
         "-framework Cocoa"
         "-framework CoreAudio"
@@ -211,6 +246,10 @@ if(APPLE)
         "-framework AudioUnit"
         "-framework CoreServices"
         "-framework CoreFoundation"
+        "-framework CoreGraphics"
+        "-framework VideoToolbox"
+        "-framework CoreMedia"
+        "-framework CoreVideo"
     )
     # Embed Info.plist so the binary gets CFBundleName=Lateralus and
     # NSHighResolutionCapable=true without needing a .app bundle.
@@ -232,19 +271,22 @@ elseif(UNIX AND NOT APPLE)
         add_executable(voicechat
             client/client.c
             client/gui_gtk.c
+            ${_SCREEN_SHARE_SRCS}
         )
         target_include_directories(voicechat PRIVATE
             ${CMAKE_SOURCE_DIR}
             ${OPUS_INCLUDE_DIR}
             ${PORTAUDIO_INCLUDE_DIR}
+            ${VPX_INCLUDE_DIR}
             ${GTK3_INCLUDE_DIRS}
         )
         target_compile_options(voicechat PRIVATE ${GTK3_CFLAGS_OTHER})
         target_link_libraries(voicechat
             ${OPUS_LIBRARY}
             ${PORTAUDIO_LIBRARY}
+            ${VPX_LIBRARY}
             ${GTK3_LIBRARIES}
-            m pthread
+            m pthread X11 Xext
         )
         target_compile_definitions(voicechat PRIVATE VC_GUI_BUILD _GNU_SOURCE
             VC_COMMIT_COUNT="${VC_COMMIT_COUNT}" VC_COMMIT_HASH="${VC_COMMIT_HASH}")
@@ -287,6 +329,7 @@ else()
     add_executable(voicechat
         client/client.c       # engine, compiled as C11
         client/gui.cpp        # UI,     compiled as C++17
+        ${_SCREEN_SHARE_SRCS}
         ${_IMGUI_SRCS}
     )
 
@@ -294,6 +337,7 @@ else()
         ${CMAKE_SOURCE_DIR}
         ${OPUS_INCLUDE_DIR}
         ${PORTAUDIO_INCLUDE_DIR}
+        ${VPX_INCLUDE_DIR}
         ${_IMGUI_DIR}
         ${_IMGUI_BACK}
     )
@@ -313,8 +357,11 @@ else()
     target_link_libraries(voicechat
         ${OPUS_LIBRARY}
         ${PORTAUDIO_LIBRARY}
+        ${VPX_LIBRARY}
         m
         ws2_32 winhttp shlwapi
+        d3d11 dxgi
+        mfplat mfuuid mf ole32
     )
     target_compile_definitions(voicechat PRIVATE VC_GUI_BUILD
         VC_COMMIT_COUNT="${VC_COMMIT_COUNT}" VC_COMMIT_HASH="${VC_COMMIT_HASH}")
