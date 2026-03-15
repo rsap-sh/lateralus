@@ -1,0 +1,300 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ created ]
+
+jobs:
+
+  # ── Linux server (Alpine/musl — fully static) ──────────────────────────
+  # Zero-dependency binary: copy and run on any Linux (glibc or musl).
+  # All deps built from source — Alpine 3.20 has no static .a packages.
+  build-linux-server:
+    runs-on: ubuntu-latest
+    container: alpine:3.20
+    steps:
+      - name: Install build tools
+        run: |
+          apk add --no-cache \
+            git build-base cmake linux-headers wget \
+            autoconf automake libtool m4 gettext-dev pkgconf \
+            musl-dev
+
+      - uses: actions/checkout@v6
+
+      - name: Build ALSA from source (static)
+        run: |
+          wget -q \
+            https://github.com/alsa-project/alsa-lib/archive/refs/tags/v1.2.12.tar.gz \
+            -O alsa.tar.gz
+          tar xf alsa.tar.gz
+          cd alsa-lib-1.2.12
+          autoreconf -fi -I m4
+          ./configure --prefix=/usr/local \
+            --enable-static --disable-shared --disable-python \
+            --quiet 2>/dev/null
+          make -j$(nproc) install
+
+      - name: Build opus from source (static)
+        run: |
+          wget -q https://downloads.xiph.org/releases/opus/opus-1.5.2.tar.gz
+          tar xf opus-1.5.2.tar.gz
+          cd opus-1.5.2
+          ./configure --prefix=/usr/local --enable-static --disable-shared \
+            --quiet 2>/dev/null
+          make -j$(nproc) install
+
+      - name: Build portaudio from source (static, ALSA backend)
+        run: |
+          wget -q \
+            https://github.com/PortAudio/portaudio/archive/refs/tags/v19.7.0.tar.gz \
+            -O portaudio.tar.gz
+          tar xf portaudio.tar.gz
+          cd portaudio-19.7.0
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DCMAKE_PREFIX_PATH=/usr/local \
+            -DPA_BUILD_STATIC=ON -DPA_BUILD_SHARED=OFF \
+            -DBUILD_SHARED_LIBS=OFF
+          cmake --build build -j$(nproc)
+          cmake --install build
+
+      - name: Build server
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSTATIC_LIBS=ON \
+            -DCMAKE_EXE_LINKER_FLAGS="-static"
+          cmake --build build --target voicechat-server -j$(nproc)
+
+      - name: Verify static linkage
+        run: |
+          file build/voicechat-server
+          ldd build/voicechat-server 2>&1 || echo "(statically linked)"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: voicechat-server-linux
+          path: build/voicechat-server
+
+  # ── Linux GUI (Ubuntu/glibc — dynamically linked) ─────────────────────
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential \
+            libopus-dev portaudio19-dev libgtk-3-dev
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target voicechat -j$(nproc)
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: voicechat-linux
+          path: build/voicechat
+
+  # ── macOS (arm64 and x86_64 — each built natively on macos-latest) ────
+  # Deps are built from source as static libs — no homebrew required at
+  # runtime.  Installs to /tmp/deps (world-writable, no sudo needed).
+  #
+  # cmake 4.x removed backward compat with cmake_minimum_required < 3.5;
+  # SDL2 2.30.x uses 2.8.12 — pass -DCMAKE_POLICY_VERSION_MINIMUM=3.5.
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            label: arm
+            deploy: "12.0"
+          - arch: x86_64
+            label: x86
+            deploy: "10.13"
+    name: build-mac-${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Build opus (static, ${{ matrix.arch }})
+        run: |
+          curl -sSL https://downloads.xiph.org/releases/opus/opus-1.5.2.tar.gz \
+            -o opus.tar.gz
+          tar xf opus.tar.gz
+          cd opus-1.5.2
+          ARCH="-arch ${{ matrix.arch }}"
+          CFLAGS="$ARCH" LDFLAGS="$ARCH" \
+            ./configure --prefix=/tmp/deps --enable-static --disable-shared \
+              --quiet 2>/dev/null
+          make -j$(sysctl -n hw.ncpu) install
+
+      - name: Build portaudio (static, ${{ matrix.arch }})
+        run: |
+          curl -sSL \
+            https://github.com/PortAudio/portaudio/archive/refs/tags/v19.7.0.tar.gz \
+            -o portaudio.tar.gz
+          tar xf portaudio.tar.gz
+          cd portaudio-19.7.0
+          cmake -B build -G Ninja \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/tmp/deps \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ matrix.deploy }} \
+            -DPA_BUILD_STATIC=ON -DPA_BUILD_SHARED=OFF \
+            -DBUILD_SHARED_LIBS=OFF
+          cmake --build build -j$(sysctl -n hw.ncpu)
+          cmake --install build
+
+      - name: Build
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ matrix.deploy }} \
+            -DCMAKE_PREFIX_PATH=/tmp/deps
+          cmake --build build --target voicechat -j$(sysctl -n hw.ncpu)
+
+      - name: Bundle & verify
+        run: |
+          # Create proper .app bundle so Finder launches it as a GUI app
+          # (plain binary double-clicked in Finder opens Terminal.app)
+          mkdir -p dist/Lateralus.app/Contents/MacOS
+          cp build/voicechat dist/Lateralus.app/Contents/MacOS/voicechat
+          cp client/Info.plist dist/Lateralus.app/Contents/Info.plist
+          chmod +x dist/Lateralus.app/Contents/MacOS/voicechat
+
+          BIN=dist/Lateralus.app/Contents/MacOS/voicechat
+          echo "--- arch ---"
+          file "$BIN"
+
+          echo "--- dylib links ---"
+          otool -L "$BIN"
+
+          BAD=$(otool -L "$BIN" | tail -n +2 | awk '{print $1}' \
+            | grep -v '^/usr/lib/' \
+            | grep -v '^/System/Library/' \
+            | grep -v '^@' || true)
+          [ -n "$BAD" ] && { echo "ERROR: non-system dylib: $BAD"; exit 1; }
+          echo "OK: no non-system runtime dependencies"
+
+          xattr -rd com.apple.quarantine dist/Lateralus.app 2>/dev/null || true
+          codesign -s - --force --options runtime dist/Lateralus.app
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: voicechat-macos-${{ matrix.label }}
+          path: dist/
+
+  # ── BSD (FreeBSD) ─────────────────────────────────────────────────────
+  # Builds only the server — no SDL2 on FreeBSD means no GUI client.
+  # GUI users on FreeBSD should compile from source.
+  build-bsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.2"
+          usesh: true
+          prepare: pkg install -y git cmake opus portaudio
+          run: |
+            export PATH=/usr/local/bin:$PATH
+            cmake -B build -DCMAKE_BUILD_TYPE=Release
+            cmake --build build --target voicechat-server -j$(sysctl -n hw.ncpu)
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: voicechat-server-freebsd
+          path: build/voicechat-server
+
+
+  # ── Windows (GUI only) ────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: msys2/setup-msys2@5c3f50d7aed2443fd9488992153c615e3eb14ea9  # node24; post-v2.30.0, pre-release
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-opus
+            mingw-w64-x86_64-portaudio
+            mingw-w64-x86_64-SDL2
+
+      - name: Build
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build --target voicechat
+
+      - name: Bundle DLLs
+        run: |
+          mkdir -p dist
+          cp build/voicechat.exe dist/
+
+          MINGW=/d/a/_temp/msys64/mingw64/bin
+          cp "$MINGW/libopus-0.dll"       dist/
+          cp "$MINGW/libportaudio.dll"    dist/
+          cp "$MINGW/SDL2.dll"            dist/
+          cp "$MINGW/libgcc_s_seh-1.dll"  dist/
+          cp "$MINGW/libwinpthread-1.dll" dist/
+          cp "$MINGW/libstdc++-6.dll"     dist/ 2>/dev/null || true
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: voicechat-windows
+          path: dist/
+
+  # ── Release: attach all binaries ─────────────────────────────────────
+  release:
+    if: github.event_name == 'release'
+    needs:
+      - build-linux-server
+      - build-linux
+      - build-macos
+      - build-bsd
+      - build-windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+
+      - name: Zip platform bundles
+        run: |
+          zip -j voicechat-macos-arm.zip voicechat-macos-arm/*
+          zip -j voicechat-macos-x86.zip voicechat-macos-x86/*
+          zip -j voicechat-freebsd.zip   voicechat-server-freebsd/*
+          zip -j voicechat-windows.zip   voicechat-windows/*
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            voicechat-server-linux/voicechat-server
+            voicechat-linux/voicechat
+            voicechat-macos-arm.zip
+            voicechat-macos-x86.zip
+            voicechat-freebsd.zip
+            voicechat-windows.zip

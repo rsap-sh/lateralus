@@ -1,0 +1,21 @@
+[Unit]
+Description=VoiceChat Relay Server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=voicechat
+Group=voicechat
+ExecStart=/usr/local/bin/voicechat-server
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

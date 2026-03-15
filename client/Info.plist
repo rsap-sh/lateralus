@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Menu bar / About panel name -->
+    <key>CFBundleName</key>              <string>Lateralus</string>
+    <key>CFBundleDisplayName</key>       <string>Lateralus</string>
+    <key>CFBundleIdentifier</key>        <string>com.lateralus.voicechat</string>
+    <key>CFBundleVersion</key>           <string>1.0</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <!-- Retina / HiDPI — fixes blurry fonts on Retina displays -->
+    <key>NSHighResolutionCapable</key>   <true/>
+    <!-- Bundle executable (required for proper .app bundle) -->
+    <key>CFBundleExecutable</key>        <string>voicechat</string>
+    <key>CFBundlePackageType</key>       <string>APPL</string>
+    <!-- Cocoa bootstrapping -->
+    <key>NSPrincipalClass</key>          <string>NSApplication</string>
+    <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+    <key>LSMinimumSystemVersion</key>    <string>10.13</string>
+</dict>
+</plist>
