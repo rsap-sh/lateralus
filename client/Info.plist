@@ -18,5 +18,8 @@
     <key>NSPrincipalClass</key>          <string>NSApplication</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
     <key>LSMinimumSystemVersion</key>    <string>10.13</string>
+    <!-- Microphone access (required since macOS 10.14 Mojave) -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Lateralus needs microphone access for voice chat.</string>
 </dict>
 </plist>
