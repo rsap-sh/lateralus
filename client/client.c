@@ -2098,16 +2098,57 @@ int do_update(void) {
     char bak[1100]; snprintf(bak, sizeof(bak), "%s.bak", self);
 
     snprintf(cmd, sizeof(cmd), "cp '%s' '%s' && chmod +x '%s'", newbin, tmp, tmp);
-    if (run_silent(cmd) != 0) { UPDATE_ERR("Copy failed (permission denied?)"); return 1; }
+    if (run_silent(cmd) != 0) {
+#ifdef __APPLE__
+        /* The binary is likely in a protected directory (e.g. /Applications/).
+         * Use osascript to prompt for admin credentials and do the replace
+         * as a single privileged operation. */
+        DLOG("[update] unprivileged copy failed, requesting admin...\n");
+        snprintf(cmd, sizeof(cmd),
+            "osascript -e 'do shell script "
+            "\"cp \\\"%s\\\" \\\"%s\\\" && chmod +x \\\"%s\\\" && "
+            "cp \\\"%s\\\" \\\"%s\\\" 2>/dev/null; "
+            "mv \\\"%s\\\" \\\"%s\\\"\" "
+            "with prompt \"Lateralus needs permission to update.\" "
+            "with administrator privileges'",
+            newbin, tmp, tmp, self, bak, tmp, self);
+        if (run_silent(cmd) != 0) {
+            UPDATE_ERR("Update cancelled or permission denied");
+            return 1;
+        }
+        /* Skip the normal backup+rename since the privileged command did it */
+        goto post_replace;
+#else
+        UPDATE_ERR("Copy failed (permission denied?)");
+        return 1;
+#endif
+    }
 
     /* Backup old binary */
     snprintf(cmd, sizeof(cmd), "cp '%s' '%s'", self, bak);
     run_silent(cmd);
 
     /* rename() is atomic on the same filesystem */
-    if (rename(tmp, self) != 0) { UPDATE_ERR("Replace failed: %s", strerror(errno)); return 1; }
+    if (rename(tmp, self) != 0) {
+#ifdef __APPLE__
+        /* rename failed — try privileged move */
+        snprintf(cmd, sizeof(cmd),
+            "osascript -e 'do shell script \"mv \\\"%s\\\" \\\"%s\\\"\" "
+            "with prompt \"Lateralus needs permission to update.\" "
+            "with administrator privileges'",
+            tmp, self);
+        if (run_silent(cmd) != 0) {
+            UPDATE_ERR("Update cancelled or permission denied");
+            return 1;
+        }
+#else
+        UPDATE_ERR("Replace failed: %s", strerror(errno));
+        return 1;
+#endif
+    }
 
-  #ifdef __APPLE__
+#ifdef __APPLE__
+post_replace:
     /* If running inside a .app bundle, use the bundle as the target for
      * quarantine removal and Gatekeeper registration (required for bundles). */
     char gk_target[1100];
@@ -2120,7 +2161,13 @@ int do_update(void) {
 
     snprintf(cmd, sizeof(cmd),
         "xattr -rd com.apple.quarantine '%s' 2>/dev/null; true", gk_target);
-    run_silent(cmd);
+    if (run_silent(cmd) != 0) {
+        /* May need elevated privileges if app is in /Applications */
+        snprintf(cmd, sizeof(cmd),
+            "osascript -e 'do shell script \"xattr -rd com.apple.quarantine \\\"%s\\\"\" "
+            "with administrator privileges' 2>/dev/null; true", gk_target);
+        run_silent(cmd);
+    }
 
     /* Register with Gatekeeper so it doesn't block the updated binary.
      * spctl --add requires admin rights; osascript shows the native
