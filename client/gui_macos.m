@@ -53,6 +53,9 @@ static NSString *const kUser   = @"vc_user";
 @property (strong) NSTextField       *roomLabel;
 @property (strong) NSTextView        *peerView;
 @property (strong) NSButton          *muteBtn, *shareBtn, *disconnectBtn;
+@property (strong) NSImageView      *screenView;
+@property (strong) NSTextField      *screenLabel;
+@property (strong) NSScrollView     *peerScroll;
 /* Refresh timer */
 @property (strong) NSTimer           *timer;
 @end
@@ -242,11 +245,29 @@ static NSString *const kUser   = @"vc_user";
     _roomLabel.frame = NSMakeRect(12, H - 38, W - 24, 24);
     [_roomView addSubview:_roomLabel];
 
+    /* Screen share preview (hidden by default, lives between buttons and peer list) */
+    _screenLabel = [NSTextField labelWithString:@""];
+    _screenLabel.font  = [NSFont systemFontOfSize:11];
+    _screenLabel.textColor = [NSColor secondaryLabelColor];
+    _screenLabel.frame = NSMakeRect(12, 48, W - 24, 16);
+    _screenLabel.hidden = YES;
+    [_roomView addSubview:_screenLabel];
+
+    _screenView = [[NSImageView alloc] initWithFrame:NSMakeRect(12, 68, W - 24, 180)];
+    _screenView.imageScaling = NSImageScaleProportionallyUpOrDown;
+    _screenView.imageAlignment = NSImageAlignCenter;
+    _screenView.wantsLayer = YES;
+    _screenView.layer.backgroundColor = [[NSColor blackColor] CGColor];
+    _screenView.hidden = YES;
+    [_roomView addSubview:_screenView];
+
+    /* Peer list scroll view */
     NSScrollView *scroll = [[NSScrollView alloc]
         initWithFrame:NSMakeRect(12, 54, W - 24, H - 106)];
     scroll.hasVerticalScroller = YES;
     scroll.autohidesScrollers  = YES;
     scroll.borderType          = NSBezelBorder;
+    scroll.autoresizingMask    = NSViewHeightSizable;
 
     _peerView = [[NSTextView alloc] initWithFrame:scroll.contentView.bounds];
     _peerView.editable            = NO;
@@ -255,6 +276,7 @@ static NSString *const kUser   = @"vc_user";
                                                                weight:NSFontWeightRegular];
     _peerView.textContainerInset  = NSMakeSize(4, 6);
     scroll.documentView = _peerView;
+    _peerScroll = scroll;
     [_roomView addSubview:scroll];
 
     CGFloat bw = (W - 48) / 3;
@@ -408,6 +430,61 @@ static NSString *const kUser   = @"vc_user";
         [txt appendString:@"\nWaiting for others to join…"];
 
     _peerView.string = txt;
+
+    /* Screen share preview */
+    BOOL sharing = vc_screen_sharing() != 0;
+    BOOL has_sharer = vc_screen_sharer_id() != 0;
+    if (has_sharer || sharing) {
+        static uint8_t *frame_buf = NULL;
+        static int frame_buf_sz = 0;
+        static uint32_t last_fid = 0;
+
+        int need = 3840 * 2160 * 4;
+        if (frame_buf_sz < need) {
+            free(frame_buf);
+            frame_buf = (uint8_t *)malloc((size_t)need);
+            frame_buf_sz = need;
+        }
+        int fw = 0, fh = 0;
+        uint32_t fid = 0;
+        if (frame_buf &&
+            vc_screen_frame_get(frame_buf, frame_buf_sz, &fw, &fh, &fid) == 0 &&
+            fid != last_fid && fw > 0 && fh > 0) {
+            last_fid = fid;
+
+            NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
+                initWithBitmapDataPlanes:NULL pixelsWide:fw pixelsHigh:fh
+                bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
+                colorSpaceName:NSDeviceRGBColorSpace
+                bytesPerRow:fw * 4 bitsPerPixel:32];
+            /* Convert BGRA → RGBA for NSBitmapImageRep */
+            unsigned char *dst = rep.bitmapData;
+            for (int i = 0; i < fw * fh; i++) {
+                dst[i*4 + 0] = frame_buf[i*4 + 2]; /* R */
+                dst[i*4 + 1] = frame_buf[i*4 + 1]; /* G */
+                dst[i*4 + 2] = frame_buf[i*4 + 0]; /* B */
+                dst[i*4 + 3] = 255;                  /* A */
+            }
+            NSImage *img = [[NSImage alloc] initWithSize:NSMakeSize(fw, fh)];
+            [img addRepresentation:rep];
+            _screenView.image = img;
+        }
+        _screenView.hidden = NO;
+        _screenLabel.hidden = NO;
+        _screenLabel.stringValue = sharing ? @"Sharing screen" : @"Viewing shared screen";
+        /* Shrink peer list to make room for preview */
+        CGFloat W = _roomView.frame.size.width;
+        CGFloat H = _roomView.frame.size.height;
+        CGFloat previewTop = 68 + 180;  /* screenView.origin.y + height */
+        _peerScroll.frame = NSMakeRect(12, previewTop + 4, W - 24, H - 42 - previewTop - 4);
+    } else {
+        _screenView.hidden = YES;
+        _screenLabel.hidden = YES;
+        /* Restore full peer list */
+        CGFloat W = _roomView.frame.size.width;
+        CGFloat H = _roomView.frame.size.height;
+        _peerScroll.frame = NSMakeRect(12, 54, W - 24, H - 106);
+    }
 }
 
 /* ── Window delegate ────────────────────────────────────────────────────── */

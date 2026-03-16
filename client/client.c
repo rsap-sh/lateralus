@@ -2399,20 +2399,43 @@ int vc_run(const char *host, const char *room,
 
         PaDeviceIndex in_dev  = Pa_GetDefaultInputDevice();
         PaDeviceIndex out_dev = Pa_GetDefaultOutputDevice();
+        if (in_dev == paNoDevice || out_dev == paNoDevice) {
+            snprintf(g_vc_error, sizeof(g_vc_error),
+                     "No %s device found", in_dev == paNoDevice ? "input" : "output");
+            fprintf(stderr, "[pa] no %s device (check microphone permissions)\n",
+                    in_dev == paNoDevice ? "input" : "output");
+            Pa_Terminate();
+            opus_encoder_destroy(vc->encoder);
+            sock_close(vc->tcp_fd);
+            sock_close(vc->udp_fd);
+            goto fail_early;
+        }
+        const PaDeviceInfo *in_info  = Pa_GetDeviceInfo(in_dev);
+        const PaDeviceInfo *out_info = Pa_GetDeviceInfo(out_dev);
+        if (!in_info || !out_info) {
+            snprintf(g_vc_error, sizeof(g_vc_error),
+                     "Audio device info unavailable");
+            fprintf(stderr, "[pa] device info NULL (check microphone permissions)\n");
+            Pa_Terminate();
+            opus_encoder_destroy(vc->encoder);
+            sock_close(vc->tcp_fd);
+            sock_close(vc->udp_fd);
+            goto fail_early;
+        }
         PaStreamParameters in_params, out_params;
         memset(&in_params,  0, sizeof(in_params));
         memset(&out_params, 0, sizeof(out_params));
         in_params.device                    = in_dev;
         in_params.channelCount              = OPUS_CHANNELS;
         in_params.sampleFormat              = paInt16;
-        in_params.suggestedLatency          = Pa_GetDeviceInfo(in_dev)->defaultLowInputLatency;
+        in_params.suggestedLatency          = in_info->defaultLowInputLatency;
         out_params.device                   = out_dev;
         out_params.channelCount             = OPUS_CHANNELS;
         out_params.sampleFormat             = paInt16;
-        out_params.suggestedLatency         = Pa_GetDeviceInfo(out_dev)->defaultLowOutputLatency;
+        out_params.suggestedLatency         = out_info->defaultLowOutputLatency;
 
-        DLOG("[pa] input:  %s\n", Pa_GetDeviceInfo(in_params.device)->name);
-        DLOG("[pa] output: %s\n", Pa_GetDeviceInfo(out_params.device)->name);
+        DLOG("[pa] input:  %s\n", in_info->name);
+        DLOG("[pa] output: %s\n", out_info->name);
 
         pa_err = Pa_OpenStream(&vc->pa_stream,
                                &in_params, &out_params,

@@ -78,6 +78,13 @@ static GtkWidget    *server_entry, *room_entry, *user_entry, *psk_entry;
 static GtkWidget    *connect_btn, *update_btn, *error_label;
 static GtkWidget    *room_label, *mute_btn, *disconnect_btn, *share_btn;
 static GtkTextBuffer *peer_buf;
+static GtkWidget    *screen_draw;              /* GtkDrawingArea for video */
+static GtkWidget    *screen_label;             /* "Viewing shared screen" text */
+static cairo_surface_t *screen_surface = NULL; /* ARGB32 surface from decoded frames */
+static int           screen_surf_w = 0, screen_surf_h = 0;
+static uint32_t      screen_last_fid = 0;
+static uint8_t      *screen_frame_buf = NULL;
+static int           screen_frame_buf_sz = 0;
 
 /* ── Update button helpers ──────────────────────────────────────────────── */
 
@@ -111,6 +118,67 @@ static void on_debug_toggled(GtkToggleButton *b, gpointer d)
 {
     (void)d;
     vc_set_debug(gtk_toggle_button_get_active(b) ? 1 : 0);
+}
+
+/* ── Screen preview rendering ──────────────────────────────────────────── */
+
+static void update_screen_surface(void)
+{
+    int w = 0, h = 0;
+    uint32_t fid = 0;
+    if (vc_screen_sharer_id() == 0 && !vc_screen_sharing()) return;
+
+    int need = 3840 * 2160 * 4;
+    if (screen_frame_buf_sz < need) {
+        free(screen_frame_buf);
+        screen_frame_buf = (uint8_t *)malloc((size_t)need);
+        screen_frame_buf_sz = need;
+    }
+    if (!screen_frame_buf) return;
+    if (vc_screen_frame_get(screen_frame_buf, screen_frame_buf_sz, &w, &h, &fid) != 0)
+        return;
+    if (fid == screen_last_fid) return;
+    screen_last_fid = fid;
+
+    /* Create/recreate Cairo surface */
+    if (w != screen_surf_w || h != screen_surf_h || !screen_surface) {
+        if (screen_surface) cairo_surface_destroy(screen_surface);
+        screen_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+        screen_surf_w = w;
+        screen_surf_h = h;
+    }
+
+    /* Copy BGRA frame data into Cairo ARGB32 surface (same byte layout) */
+    cairo_surface_flush(screen_surface);
+    unsigned char *dst = cairo_image_surface_get_data(screen_surface);
+    int stride = cairo_image_surface_get_stride(screen_surface);
+    for (int y = 0; y < h; y++)
+        memcpy(dst + y * stride, screen_frame_buf + y * w * 4, (size_t)w * 4);
+    cairo_surface_mark_dirty(screen_surface);
+}
+
+static gboolean on_screen_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
+{
+    (void)data;
+    if (!screen_surface || screen_surf_w <= 0 || screen_surf_h <= 0) return FALSE;
+
+    int alloc_w = gtk_widget_get_allocated_width(widget);
+    int alloc_h = gtk_widget_get_allocated_height(widget);
+    double aspect = (double)screen_surf_w / (double)screen_surf_h;
+    double disp_w = alloc_w;
+    double disp_h = disp_w / aspect;
+    if (disp_h > alloc_h) {
+        disp_h = alloc_h;
+        disp_w = disp_h * aspect;
+    }
+    double off_x = (alloc_w - disp_w) / 2.0;
+    double off_y = (alloc_h - disp_h) / 2.0;
+
+    cairo_translate(cr, off_x, off_y);
+    cairo_scale(cr, disp_w / screen_surf_w, disp_h / screen_surf_h);
+    cairo_set_source_surface(cr, screen_surface, 0, 0);
+    cairo_paint(cr);
+    return TRUE;
 }
 
 /* ── Peer list refresh (100 ms timer) ───────────────────────────────────── */
@@ -174,6 +242,24 @@ static gboolean tick(gpointer data)
 
     gtk_text_buffer_set_text(peer_buf, txt->str, -1);
     g_string_free(txt, TRUE);
+
+    /* Update screen share preview */
+    update_screen_surface();
+    int has_preview = (screen_surface != NULL && screen_surf_w > 0 &&
+                       (vc_screen_sharer_id() != 0 || sharing));
+    if (has_preview) {
+        gtk_widget_show(screen_draw);
+        gtk_widget_show(screen_label);
+        if (sharing)
+            gtk_label_set_text(GTK_LABEL(screen_label), "Sharing screen");
+        else
+            gtk_label_set_text(GTK_LABEL(screen_label), "Viewing shared screen");
+        gtk_widget_queue_draw(screen_draw);
+    } else {
+        gtk_widget_hide(screen_draw);
+        gtk_widget_hide(screen_label);
+    }
+
     return G_SOURCE_CONTINUE;
 }
 
@@ -379,6 +465,18 @@ static GtkWidget *build_room_page(void)
 
     gtk_container_add(GTK_CONTAINER(scroll), tv);
     gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
+
+    /* Screen share preview */
+    screen_label = gtk_label_new("");
+    gtk_label_set_xalign(GTK_LABEL(screen_label), 0.0);
+    gtk_box_pack_start(GTK_BOX(vbox), screen_label, FALSE, FALSE, 0);
+    gtk_widget_set_no_show_all(screen_label, TRUE);
+
+    screen_draw = gtk_drawing_area_new();
+    gtk_widget_set_size_request(screen_draw, -1, 240);
+    g_signal_connect(screen_draw, "draw", G_CALLBACK(on_screen_draw), NULL);
+    gtk_box_pack_start(GTK_BOX(vbox), screen_draw, FALSE, FALSE, 0);
+    gtk_widget_set_no_show_all(screen_draw, TRUE);
 
     /* Mute / Share Screen / Disconnect buttons */
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
