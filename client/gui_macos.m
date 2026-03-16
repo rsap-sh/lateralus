@@ -371,9 +371,15 @@ static NSString *const kUser   = @"vc_user";
             if (rc == 0) {
                 self->_updateBtn.title = @"✓ Updated — restart to apply";
             } else {
-                self->_updateBtn.title = @"Update failed";
+                const char *reason = vc_last_error();
+                if (reason && reason[0]) {
+                    self->_updateBtn.title =
+                        [NSString stringWithFormat:@"Update failed: %s", reason];
+                } else {
+                    self->_updateBtn.title = @"Update failed";
+                }
                 dispatch_after(
-                    dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),
+                    dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
                     dispatch_get_main_queue(),
                     ^{ self->_updateBtn.title = @"Check for Updates"; });
             }

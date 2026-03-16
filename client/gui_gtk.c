@@ -93,8 +93,18 @@ static gboolean update_idle(gpointer data)
 {
     (void)data;
     gtk_widget_set_sensitive(update_btn, TRUE);
-    gtk_button_set_label(GTK_BUTTON(update_btn),
-        s_update_rc == 0 ? "✓ Updated — restart to apply" : "Update failed");
+    if (s_update_rc == 0) {
+        gtk_button_set_label(GTK_BUTTON(update_btn), "✓ Updated — restart to apply");
+    } else {
+        const char *reason = vc_last_error();
+        if (reason && reason[0]) {
+            char msg[300];
+            snprintf(msg, sizeof(msg), "Update failed: %s", reason);
+            gtk_button_set_label(GTK_BUTTON(update_btn), msg);
+        } else {
+            gtk_button_set_label(GTK_BUTTON(update_btn), "Update failed");
+        }
+    }
     return G_SOURCE_REMOVE;
 }
 
