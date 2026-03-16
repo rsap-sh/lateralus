@@ -2097,26 +2097,63 @@ int do_update(void) {
     char tmp[1100]; snprintf(tmp, sizeof(tmp), "%s.new", self);
     char bak[1100]; snprintf(bak, sizeof(bak), "%s.bak", self);
 
+#ifdef __APPLE__
+    /* Detect if inside a .app bundle and find its Info.plist peer */
+    char app_plist[1100] = {0};
+    char new_plist[512] = {0};
+    {
+        char *dot_app = strstr(self, ".app/Contents/MacOS/");
+        if (dot_app) {
+            size_t prefix_len = (size_t)(dot_app - self) + strlen(".app/Contents/");
+            snprintf(app_plist, sizeof(app_plist), "%.*sInfo.plist",
+                     (int)prefix_len, self);
+            /* The artifact also contains the updated Info.plist */
+            const char *macos_suffix = "MacOS/" UPDATE_BINARY;
+            size_t suf_len = strlen(macos_suffix);
+            size_t nb_len = strlen(newbin);
+            if (nb_len > suf_len &&
+                strcmp(newbin + nb_len - suf_len, macos_suffix) == 0) {
+                snprintf(new_plist, sizeof(new_plist), "%.*sInfo.plist",
+                         (int)(nb_len - suf_len), newbin);
+                struct stat st;
+                if (stat(new_plist, &st) != 0) new_plist[0] = '\0';
+            }
+        }
+    }
+#endif
+
     snprintf(cmd, sizeof(cmd), "cp '%s' '%s' && chmod +x '%s'", newbin, tmp, tmp);
     if (run_silent(cmd) != 0) {
 #ifdef __APPLE__
         /* The binary is likely in a protected directory (e.g. /Applications/).
-         * Use osascript to prompt for admin credentials and do the replace
-         * as a single privileged operation. */
+         * Write a helper script to /tmp and run it via osascript with admin
+         * privileges — avoids nested escaping issues with inline commands. */
         DLOG("[update] unprivileged copy failed, requesting admin...\n");
-        snprintf(cmd, sizeof(cmd),
-            "osascript -e 'do shell script "
-            "\"cp \\\"%s\\\" \\\"%s\\\" && chmod +x \\\"%s\\\" && "
-            "cp \\\"%s\\\" \\\"%s\\\" 2>/dev/null; "
-            "mv \\\"%s\\\" \\\"%s\\\"\" "
-            "with prompt \"Lateralus needs permission to update.\" "
-            "with administrator privileges'",
-            newbin, tmp, tmp, self, bak, tmp, self);
-        if (run_silent(cmd) != 0) {
-            UPDATE_ERR("Update cancelled or permission denied");
-            return 1;
+        {
+            const char *script = "/tmp/voicechat-update.sh";
+            FILE *sf = fopen(script, "w");
+            if (!sf) { UPDATE_ERR("Cannot write update script"); return 1; }
+            fprintf(sf, "#!/bin/sh\nset -e\n");
+            fprintf(sf, "cp '%s' '%s'\n", newbin, tmp);
+            fprintf(sf, "chmod +x '%s'\n", tmp);
+            fprintf(sf, "cp '%s' '%s' 2>/dev/null || true\n", self, bak);
+            fprintf(sf, "mv '%s' '%s'\n", tmp, self);
+            if (new_plist[0] && app_plist[0])
+                fprintf(sf, "cp '%s' '%s'\n", new_plist, app_plist);
+            fclose(sf);
+            chmod(script, 0755);
+
+            snprintf(cmd, sizeof(cmd),
+                "osascript -e 'do shell script \"/tmp/voicechat-update.sh\" "
+                "with prompt \"Lateralus needs permission to update.\" "
+                "with administrator privileges'");
+            int rc = run_silent(cmd);
+            unlink(script);
+            if (rc != 0) {
+                UPDATE_ERR("Update cancelled or admin auth failed");
+                return 1;
+            }
         }
-        /* Skip the normal backup+rename since the privileged command did it */
         goto post_replace;
 #else
         UPDATE_ERR("Copy failed (permission denied?)");
@@ -2131,15 +2168,27 @@ int do_update(void) {
     /* rename() is atomic on the same filesystem */
     if (rename(tmp, self) != 0) {
 #ifdef __APPLE__
-        /* rename failed — try privileged move */
-        snprintf(cmd, sizeof(cmd),
-            "osascript -e 'do shell script \"mv \\\"%s\\\" \\\"%s\\\"\" "
-            "with prompt \"Lateralus needs permission to update.\" "
-            "with administrator privileges'",
-            tmp, self);
-        if (run_silent(cmd) != 0) {
-            UPDATE_ERR("Update cancelled or permission denied");
-            return 1;
+        {
+            const char *script = "/tmp/voicechat-update.sh";
+            FILE *sf = fopen(script, "w");
+            if (sf) {
+                fprintf(sf, "#!/bin/sh\nmv '%s' '%s'\n", tmp, self);
+                fclose(sf);
+                chmod(script, 0755);
+                snprintf(cmd, sizeof(cmd),
+                    "osascript -e 'do shell script \"/tmp/voicechat-update.sh\" "
+                    "with prompt \"Lateralus needs permission to update.\" "
+                    "with administrator privileges'");
+                int rc = run_silent(cmd);
+                unlink(script);
+                if (rc != 0) {
+                    UPDATE_ERR("Update cancelled or admin auth failed");
+                    return 1;
+                }
+            } else {
+                UPDATE_ERR("Replace failed: %s", strerror(errno));
+                return 1;
+            }
         }
 #else
         UPDATE_ERR("Replace failed: %s", strerror(errno));
@@ -2148,6 +2197,12 @@ int do_update(void) {
     }
 
 #ifdef __APPLE__
+    /* Also update Info.plist (needed for mic permission key, etc.) */
+    if (new_plist[0] && app_plist[0]) {
+        snprintf(cmd, sizeof(cmd), "cp '%s' '%s'", new_plist, app_plist);
+        run_silent(cmd); /* best-effort, privileged path already handled it */
+    }
+
 post_replace:
     /* If running inside a .app bundle, use the bundle as the target for
      * quarantine removal and Gatekeeper registration (required for bundles). */
@@ -2159,25 +2214,31 @@ post_replace:
         if (dot_app) dot_app[4] = '\0'; /* truncate to "…/Lateralus.app" */
     }
 
-    snprintf(cmd, sizeof(cmd),
-        "xattr -rd com.apple.quarantine '%s' 2>/dev/null; true", gk_target);
-    if (run_silent(cmd) != 0) {
-        /* May need elevated privileges if app is in /Applications */
-        snprintf(cmd, sizeof(cmd),
-            "osascript -e 'do shell script \"xattr -rd com.apple.quarantine \\\"%s\\\"\" "
-            "with administrator privileges' 2>/dev/null; true", gk_target);
-        run_silent(cmd);
-    }
+    /* Quarantine removal + Gatekeeper registration.
+     * Write a script to avoid nested osascript/shell escaping issues. */
+    {
+        const char *gk_script = "/tmp/voicechat-gk.sh";
+        FILE *sf = fopen(gk_script, "w");
+        if (sf) {
+            fprintf(sf, "#!/bin/sh\n");
+            fprintf(sf, "xattr -rd com.apple.quarantine '%s' 2>/dev/null || true\n",
+                    gk_target);
+            fprintf(sf, "spctl --add '%s' 2>/dev/null || true\n", gk_target);
+            fclose(sf);
+            chmod(gk_script, 0755);
 
-    /* Register with Gatekeeper so it doesn't block the updated binary.
-     * spctl --add requires admin rights; osascript shows the native
-     * macOS password prompt so the user never has to touch System Settings. */
-    snprintf(cmd, sizeof(cmd),
-        "osascript -e 'do shell script \"spctl --add \\\"%s\\\"\" "
-        "with prompt \"Allow Lateralus to run after update?\" "
-        "with administrator privileges' 2>/dev/null; true",
-        gk_target);
-    run_silent(cmd);
+            /* Try unprivileged first */
+            snprintf(cmd, sizeof(cmd), "%s", gk_script);
+            if (run_silent(cmd) != 0) {
+                snprintf(cmd, sizeof(cmd),
+                    "osascript -e 'do shell script \"%s\" "
+                    "with prompt \"Allow Lateralus to run after update?\" "
+                    "with administrator privileges'", gk_script);
+                run_silent(cmd);
+            }
+            unlink(gk_script);
+        }
+    }
   #endif
 
     /* Cleanup temp files */
