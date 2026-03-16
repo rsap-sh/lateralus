@@ -2305,6 +2305,7 @@ void vc_screen_share_start(void)
 void vc_screen_share_stop(void)
 {
     ss_stop();
+    ss_receiver_clear();  /* Clear stale frame so next sharer starts fresh */
     if (g_client.connected) {
         char msg[128];
         snprintf(msg, sizeof(msg), "{\"op\":\"screen\",\"sharing\":0}\n");

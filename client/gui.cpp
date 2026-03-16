@@ -356,7 +356,17 @@ static void update_screen_texture()
     uint32_t fid = 0;
 
     /* Check if there's a new frame */
-    if (vc_screen_sharer_id() == 0 && !vc_screen_sharing()) return;
+    if (vc_screen_sharer_id() == 0 && !vc_screen_sharing()) {
+        /* No active sharer — reset frame tracking so the next sharer's
+         * frames are always displayed (even if their frame_id is lower). */
+        if (s_screen_tex) {
+            SDL_DestroyTexture(s_screen_tex);
+            s_screen_tex = NULL;
+            s_screen_tex_w = s_screen_tex_h = 0;
+        }
+        s_last_frame_id = 0;
+        return;
+    }
 
     /* Ensure buffer is large enough (4K max: 3840*2160*4 ≈ 33MB) */
     int need = 3840 * 2160 * 4;

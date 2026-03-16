@@ -136,7 +136,15 @@ static void update_screen_surface(void)
 {
     int w = 0, h = 0;
     uint32_t fid = 0;
-    if (vc_screen_sharer_id() == 0 && !vc_screen_sharing()) return;
+    if (vc_screen_sharer_id() == 0 && !vc_screen_sharing()) {
+        if (screen_surface) {
+            cairo_surface_destroy(screen_surface);
+            screen_surface = NULL;
+            screen_surf_w = screen_surf_h = 0;
+        }
+        screen_last_fid = 0;
+        return;
+    }
 
     int need = 3840 * 2160 * 4;
     if (screen_frame_buf_sz < need) {

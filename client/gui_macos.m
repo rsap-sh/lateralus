@@ -440,10 +440,10 @@ static NSString *const kUser   = @"vc_user";
     /* Screen share preview */
     BOOL sharing = vc_screen_sharing() != 0;
     BOOL has_sharer = vc_screen_sharer_id() != 0;
+    static uint8_t *frame_buf = NULL;
+    static int frame_buf_sz = 0;
+    static uint32_t last_fid = 0;
     if (has_sharer || sharing) {
-        static uint8_t *frame_buf = NULL;
-        static int frame_buf_sz = 0;
-        static uint32_t last_fid = 0;
 
         int need = 3840 * 2160 * 4;
         if (frame_buf_sz < need) {
@@ -485,6 +485,8 @@ static NSString *const kUser   = @"vc_user";
         _peerScroll.frame = NSMakeRect(12, previewTop + 4, W - 24, H - 42 - previewTop - 4);
     } else {
         _screenView.hidden = YES;
+        _screenView.image  = nil;  /* Clear stale frame */
+        last_fid = 0;              /* Reset so next sharer's frames render */
         _screenLabel.hidden = YES;
         /* Restore full peer list */
         CGFloat W = _roomView.frame.size.width;
