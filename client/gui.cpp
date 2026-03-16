@@ -300,8 +300,14 @@ static void render_connect(float win_w)
     bool upd_ok   = s_update_ok;
     pthread_mutex_unlock(&s_upd_lock);
 
+    static char upd_fail_msg[300] = "Update failed";
+    if (upd_done && !upd_ok) {
+        const char *reason = vc_last_error();
+        if (reason && reason[0])
+            snprintf(upd_fail_msg, sizeof(upd_fail_msg), "Update failed: %s", reason);
+    }
     const char *upd_label = upd_busy ? "Updating\xe2\x80\xa6"
-                          : upd_done ? (upd_ok ? "\xe2\x9c\x93 Restart to apply" : "Update failed")
+                          : upd_done ? (upd_ok ? "\xe2\x9c\x93 Restart to apply" : upd_fail_msg)
                           : "Check for Updates";
 
     if (upd_busy) ImGui::BeginDisabled();

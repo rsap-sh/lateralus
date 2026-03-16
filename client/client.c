@@ -1661,6 +1661,12 @@ static char *load_token(char *buf, size_t sz) {
     return buf[0] ? buf : NULL;
 }
 
+/* Helper: set g_vc_error so GUI can display the reason, AND log to stderr */
+#define UPDATE_ERR(fmt, ...) do { \
+    snprintf(g_vc_error, sizeof(g_vc_error), fmt, ##__VA_ARGS__); \
+    fprintf(stderr, "[update] %s\n", g_vc_error); \
+} while(0)
+
 int do_update(void) {
     /* Token priority: env var → config file */
     char token_buf[256] = {0};
@@ -1669,12 +1675,7 @@ int do_update(void) {
         token = load_token(token_buf, sizeof(token_buf));
 
     if (!token || !token[0]) {
-        fprintf(stderr,
-            "[update] No GitHub token found.\n"
-            "  Set it once with: --token <your_token>\n"
-            "  Or set env var:   GITHUB_TOKEN=ghp_...\n"
-            "  Token needs: Actions=Read (+ Contents=Read for private repos)\n"
-            "  Create one at: https://github.com/settings/tokens\n");
+        UPDATE_ERR("No GitHub token. Use --token <token> or set GITHUB_TOKEN");
         return 1;
     }
 
@@ -1870,24 +1871,20 @@ int do_update(void) {
         "-o /tmp/voicechat-runs.json",
         token, UPDATE_API);
     if (run_silent(cmd) != 0) {
-        fprintf(stderr,
-            "[update] failed to fetch run list.\n"
-            "  Check your token has Actions=Read scope.\n");
+        UPDATE_ERR("Failed to fetch CI runs (check token has Actions scope)");
         return 1;
     }
     size_t runs_len = 0;
     char *runs_json = read_file_alloc("/tmp/voicechat-runs.json", &runs_len);
     if (!runs_json || runs_len == 0) {
-        fprintf(stderr, "[update] empty response for run list\n");
+        UPDATE_ERR("Empty response from GitHub API");
         free(runs_json);
         return 1;
     }
     char run_id[64] = {0};
     if (!json_find_obj_id(runs_json, "head_branch", "main",
                           "conclusion", "success", run_id, sizeof(run_id))) {
-        fprintf(stderr,
-            "[update] no successful run found on main branch\n"
-            "  Response snippet: %.200s\n", runs_json);
+        UPDATE_ERR("No successful CI run found on main branch");
         free(runs_json);
         return 1;
     }
@@ -1905,13 +1902,13 @@ int do_update(void) {
         "-o /tmp/voicechat-artifacts.json",
         token, UPDATE_API, run_id);
     if (run_silent(cmd) != 0) {
-        fprintf(stderr, "[update] failed to fetch artifact list\n");
+        UPDATE_ERR("Failed to fetch artifact list for run %s", run_id);
         return 1;
     }
     size_t arts_len = 0;
     char *arts_json = read_file_alloc("/tmp/voicechat-artifacts.json", &arts_len);
     if (!arts_json || arts_len == 0) {
-        fprintf(stderr, "[update] empty artifact list response\n");
+        UPDATE_ERR("Empty artifact list for run %s", run_id);
         free(arts_json);
         return 1;
     }
@@ -1926,8 +1923,7 @@ int do_update(void) {
                  "\"name\":\"%s\"", UPDATE_ARTIFACT);
         const char *nm = strstr(arts_json, name_needle);
         if (!nm) {
-            fprintf(stderr, "[update] artifact '%s' not found in run %s\n",
-                    UPDATE_ARTIFACT, run_id);
+            UPDATE_ERR("Artifact '%s' not found in run %s", UPDATE_ARTIFACT, run_id);
             free(arts_json);
             return 1;
         }
@@ -1946,8 +1942,7 @@ int do_update(void) {
     }
     free(arts_json);
     if (!artifact_id[0]) {
-        fprintf(stderr, "[update] could not extract id for artifact '%s'\n",
-                UPDATE_ARTIFACT);
+        UPDATE_ERR("Could not extract id for artifact '%s'", UPDATE_ARTIFACT);
         return 1;
     }
     DLOG("[update] artifact id: %s  (%s)\n", artifact_id, UPDATE_ARTIFACT);
@@ -2009,7 +2004,7 @@ int do_update(void) {
         snprintf(cmd, sizeof(cmd), "curl -fL '%s' -o '%s'", s3url, zippath);
     } else {
         /* Fallback: try direct download with auth (works for some token types) */
-        fprintf(stderr, "[update] no redirect URL found, trying direct download...\n");
+        DLOG("[update] no redirect URL found, trying direct download...\n");
         snprintf(cmd, sizeof(cmd),
             "curl -fL "
             "-H 'Accept: application/vnd.github+json' "
@@ -2020,7 +2015,7 @@ int do_update(void) {
             token, UPDATE_API, artifact_id, zippath);
     }
     if (run_silent(cmd) != 0) {
-        fprintf(stderr, "[update] download failed\n");
+        UPDATE_ERR("Download failed (artifact may have expired)");
         return 1;
     }
 
@@ -2033,7 +2028,7 @@ int do_update(void) {
         "rm -rf '%s' && unzip -qo '%s' -d '%s'", extdir, zippath, extdir);
 #endif
     if (run_silent(cmd) != 0) {
-        fprintf(stderr, "[update] extraction failed\n");
+        UPDATE_ERR("Extraction failed (corrupt zip?)");
         return 1;
     }
 
@@ -2076,7 +2071,7 @@ int do_update(void) {
         }
     }
     if (!newbin[0]) {
-        fprintf(stderr, "[update] '%s' not found inside artifact\n", UPDATE_BINARY);
+        UPDATE_ERR("Binary '%s' not found inside artifact", UPDATE_BINARY);
         return 1;
     }
     DLOG("[update] found binary: %s\n", newbin);
@@ -2089,7 +2084,7 @@ int do_update(void) {
     ssize_t rlen = readlink("/proc/self/exe", self, sizeof(self)-1);
     if (rlen > 0) self[rlen] = '\0';
   #endif
-    if (!self[0]) { fprintf(stderr, "[update] could not resolve own path\n"); return 1; }
+    if (!self[0]) { UPDATE_ERR("Could not resolve own binary path"); return 1; }
 
     /* ── Step 7: Strip quarantine from extracted binary (macOS) ────── */
   #ifdef __APPLE__
@@ -2103,14 +2098,14 @@ int do_update(void) {
     char bak[1100]; snprintf(bak, sizeof(bak), "%s.bak", self);
 
     snprintf(cmd, sizeof(cmd), "cp '%s' '%s' && chmod +x '%s'", newbin, tmp, tmp);
-    if (run_silent(cmd) != 0) { fprintf(stderr, "[update] copy failed\n"); return 1; }
+    if (run_silent(cmd) != 0) { UPDATE_ERR("Copy failed (permission denied?)"); return 1; }
 
     /* Backup old binary */
     snprintf(cmd, sizeof(cmd), "cp '%s' '%s'", self, bak);
     run_silent(cmd);
 
     /* rename() is atomic on the same filesystem */
-    if (rename(tmp, self) != 0) { perror("[update] rename failed"); return 1; }
+    if (rename(tmp, self) != 0) { UPDATE_ERR("Replace failed: %s", strerror(errno)); return 1; }
 
   #ifdef __APPLE__
     /* If running inside a .app bundle, use the bundle as the target for
